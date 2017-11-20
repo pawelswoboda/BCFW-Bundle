@@ -1,4 +1,4 @@
-#include "../SVM.h"
+#include "SVM.h"
 #include <cassert>
 #include <array>
 #include <iostream>
