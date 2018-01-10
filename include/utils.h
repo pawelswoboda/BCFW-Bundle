@@ -20,9 +20,7 @@
 #ifndef HGALHALSJGHASASFASFG
 #define HGALHALSJGHASASFASFG
 
-#include <cstdlib>
-
-namespace BCFW_Bundle {
+#include <stdlib.h>
 
 inline int RandomInteger(int N) // returns random integer in [0,N-1]
 {
@@ -149,6 +147,6 @@ inline void Interpolate(double* u, double* v, double gamma, int d)
 //////////////////////////////////////////
 
 
-} // namespace BCFW_Bundle
+
 
 #endif

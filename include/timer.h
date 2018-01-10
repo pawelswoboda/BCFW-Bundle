@@ -30,8 +30,6 @@
 
 	#include <windows.h>
 
-namespace BCFW_Bundle {
-
 	inline double get_time()
 	{
 		LARGE_INTEGER t, frequency;
@@ -39,8 +37,6 @@ namespace BCFW_Bundle {
 		QueryPerformanceFrequency(&frequency);
 		return (double)t.QuadPart/(double)frequency.QuadPart;
 	}
-
-}
 
 #endif
 
@@ -52,16 +48,12 @@ namespace BCFW_Bundle {
 
 	#include <time.h>
 
-namespace BCFW_Bundle {
-
 	inline double get_time()
 	{
 		struct timespec t;
 		clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t);
 		return (double)t.tv_nsec*1.00E-9 + (double)t.tv_sec;
 	}
-
-}
 
 #endif
 
@@ -73,16 +65,12 @@ namespace BCFW_Bundle {
 
 	#include <sys/resource.h>
 
-namespace BCFW_Bundle {
-
 	inline double get_time()
 	{
 		struct rusage t;
 		getrusage (RUSAGE_SELF, &t);
 		return (double)t.ru_utime.tv_usec*1.00E-6 + (double)t.ru_utime.tv_sec;
 	}
-
-}
 
 #endif
 
@@ -92,9 +80,7 @@ namespace BCFW_Bundle {
 
 #ifdef PM_TIMER_EXTERNAL
 
-namespace BCFW_Bundle {
 	extern double get_time();
-}
 
 #endif
 
@@ -104,9 +90,7 @@ namespace BCFW_Bundle {
 
 #ifdef PM_TIMER_NONE
 
-namespace BCFW_Bundle {
 	inline double get_time() { return 0; }
-}
 
 #endif
 

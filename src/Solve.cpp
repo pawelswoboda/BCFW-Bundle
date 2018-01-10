@@ -1,150 +1,189 @@
 /*
     Copyright Vladimir Kolmogorov vnk@ist.ac.at 2014
 
-    This file is part of SVM.
+    This file is part of FWMAP.
 
-    SVM is free software: you can redistribute it and/or modify
+    FWMAP is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
-    SVM is distributed in the hope that it will be useful,
+    FWMAP is distributed in the hope that it will be useful,
     but WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
     GNU General Public License for more details.
 
     You should have received a copy of the GNU General Public License
-    along with SVM.  If not, see <http://www.gnu.org/licenses/>.
+    along with FWMAP.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 
 #include <stdio.h>
-#include <cstring>
-#include <cstdlib>
-#include <cmath>
-#include "SVM.h"
-#include "SVMutils.h"
+#include <string.h>
+#include <stdlib.h>
+#include <math.h>
+#include "FW-MAP.h"
+#include "utils.h"
 #include "timer.h"
 
-namespace BCFW_Bundle {
 
-void SVM::AddCuttingPlane(int i, YPtr y)
+void FWMAP::Term::ComputeLambda(double* lambdai)
 {
-	if (options.cp_max <= 0) return;
-	if (terms[i]->isDuplicate(y)) return;
-	terms[i]->AddPlane(y, options.cp_max);
+	int k;
+	double* mui = fwmap->MU + shift;
+	if (!mapping)
+	{
+		for (k=0; k<di; k++) lambdai[k] = fwmap->c*xi[k] + mui[k] - fwmap->nu[k];
+	}
+	else
+	{
+		for (k=0; k<di; k++) lambdai[k] = fwmap->c*xi[k] + mui[k] - fwmap->nu[mapping[k]];
+	}
+}
+
+double FWMAP::GetCurrentUpperBound()
+{
+	double sum1 = 0, sum2 = 0, sum3 = 0;
+	int i, k;
+	for (i=0; i<n; i++)
+	{
+		double* xi = terms[i]->xi;
+		double* mui = MU + terms[i]->shift;
+		for (k=0; k<terms[i]->di; k++)
+		{
+			sum1 += xi[k]*xi[k];
+			sum2 += xi[k]*mui[k];
+		}
+		sum2 += xi[k];
+	}
+	for (k=0; k<d; k++) sum3 += counts[k]*nu[k]*nu[k];
+	return c*sum1/2 + sum2 - sum3/(2*c);
+}
+
+void FWMAP::ComputeGaps(double* LAMBDA, double& upper_bound, double& gap_factor, double* x_buf)
+{
+	double* x_min = x_buf;
+	double* x_max = x_buf + d;
+
+	int i, k;
+
+	for (k=0; k<d; k++)
+	{
+		x_min[k] = 1e100;
+		x_max[k] = -1e100;
+	}
+
+	upper_bound = 0;
+	for (i=0; i<n; i++)
+	{
+		double* xi = terms[i]->xi;
+		double* lambdai = LAMBDA + terms[i]->shift;
+		int* mapping = terms[i]->mapping;
+		for (k=0; k<terms[i]->di; k++)
+		{
+			int kk = (mapping) ? mapping[k] : k;
+			if (x_min[kk] > xi[k]) x_min[kk] = xi[k];
+			if (x_max[kk] < xi[k]) x_max[kk] = xi[k];
+			upper_bound += xi[k]*lambdai[k];
+		}
+		upper_bound += xi[k];
+	}
+
+	gap_factor = 0;
+	for (k=0; k<d; k++)
+	{
+		gap_factor += x_max[k] - x_min[k];
+	}
 }
 
 
-void SVM::SetTerm(int i, TermData term_data, int di, int y_size_in_bytes, int* mapping)
-{
-	if (terms[i]) { printf("Error: SetTerm() cannot be called twice for the same term\n"); exit(1); }
-
-	bool maintain_products = (options.kernel_max > 1) ? true : false;
-	terms[i] = new Term(di, term_data, mapping, y_size_in_bytes, this, &buf, maintain_products);
-}
-
-void SVM::InitSolver()
+void FWMAP::InitSolver()
 {
 	int i, k;
 
-	SetZero(w, d);
-	SetZero(z, d+1);
+	int di_max = 0;
+	int y_size_in_bytes_max = 0;
+	di_sum = 0;
+	for (i=0; i<n; i++)
+	{
+		if (di_max < terms[i]->di) di_max = terms[i]->di;
+		if (y_size_in_bytes_max < terms[i]->y_size_in_bytes) y_size_in_bytes_max = terms[i]->y_size_in_bytes;
+		terms[i]->shift = di_sum;
+		di_sum += terms[i]->di;
+	}
+
+	LAMBDA_best = (double*) buf.Alloc(di_sum*sizeof(double));
+	LAMBDA = (double*) buf.Alloc(di_sum*sizeof(double));
+	MU = (double*) buf.Alloc(di_sum*sizeof(double));
+
+	SetZero(nu, d);
+	SetZero(LAMBDA_best, di_sum);
+	SetZero(MU, di_sum);
+	memset(counts, 0, d*sizeof(int));
 
 	total_plane_num = 0;
 	timestamp = 0;
 	timestamp_threshold = -1;
 
-	y_size_in_bytes_max = 0;
-	for (i=0; i<n; i++)
-	{
-		if (y_size_in_bytes_max < terms[i]->y_size_in_bytes_plus) y_size_in_bytes_max = terms[i]->y_size_in_bytes_plus;
-	}
-	YPtr y_buf = (YPtr) new char[y_size_in_bytes_max];
+	xi_buf = (double*) buf.Alloc((di_max+1)*sizeof(double));
+	if (copy_fn) y_buf = (YPtr) buf.Alloc(y_size_in_bytes_max + sizeof(double));
+	else         y_buf = (YPtr) xi_buf;
 
+	v_best = 0;
 	for (i=0; i<n; i++)
 	{
-		double* phi = terms[i]->phi;
-		if (zero_lower_bound)
+		double* xi = terms[i]->xi;
+
+		YPtr y = (copy_fn) ? y_buf : xi;
+		xi[terms[i]->di] = *terms[i]->GetFreeTermPtr(y) = (*min_fn)(LAMBDA_best + terms[i]->shift, y, terms[i]->term_data);
+		v_best += xi[terms[i]->di];
+		if (copy_fn) (*copy_fn)(xi, y, terms[i]->term_data);
+		if (!terms[i]->mapping)
 		{
-			SetZero(phi, d+1);
+			for (k=0; k<d; k++)
+			{
+				nu[k] += c*xi[k];
+				counts[k] ++;
+			}
 		}
 		else
 		{
-			double* wi = terms[i]->ComputeRestriction(w);
-			YPtr y = (copy_fn) ? y_buf : phi;
-			phi[terms[i]->di] = *terms[i]->GetFreeTermPtr(y) = (*max_fn)(wi, y, terms[i]->term_data);
-			if (copy_fn) (*copy_fn)(phi, y, terms[i]->term_data);
-			if (!terms[i]->mapping)
+			for (k=0; k<terms[i]->di; k++)
 			{
-				for (k=0; k<=d; k++) z[k] -= c*phi[k];
+				nu[terms[i]->mapping[k]] += c*xi[k];
+				counts[terms[i]->mapping[k]] ++;
 			}
-			else
-			{
-				for (k=0; k<=terms[i]->di; k++) z[terms[i]->mapping[k]] -= c*phi[k];
-			}
-			AddCuttingPlane(i, y);
 		}
+		AddCuttingPlane(i, y);
 	}
 
-	delete [] (char*) y_buf;
+	for (k=0; k<d; k++)
+	{
+		if (counts[k]) nu[k] /= counts[k];
+	}
 }
 
 
-double* SVM::Solve()
+double FWMAP::Solve()
 {
-	time_start = get_time();
+	double time_start = get_time();
 
-	c = options.c_init;
-	InitSolver();
-	int _i, i, k;
-	
-	// Throughtout the algorithm, we must have w = lambda_mu_inv*neg_phi_sum.
-	// For efficiency don't recompute w every time when neg_phi_sum is updated;
-	// instead, restore this only when calling external functions and upon termination.
+	c = options.c;
+	if (!LAMBDA_best)
+	{
+		InitSolver();
+	}
 
-	//Multiply(w, neg_phi_sum, lambda_mu_inv, d);
-	lower_bound_last = GetCurrentLowerBound();
-
-	int di_sum = 0;
-	for (i=0; i<n; i++) di_sum += terms[i]->di;
-
-	int approx_max = (options.cp_max <= 0) ? 0 : options.approx_max;
-
-	int vec_size = (d+1)*sizeof(double);
-	int alloc_size = vec_size + y_size_in_bytes_max;
-	if (options.randomize_method >= 1 || options.randomize_method <= 3)	alloc_size += n*sizeof(int);
-	char* _buf = new char[alloc_size];
-	char* _buf0 = _buf;
-
-	YPtr y_new_buf = (YPtr) _buf; _buf += y_size_in_bytes_max;
-	double* phi_new = (double*) _buf; _buf += vec_size;
+	double* x_buf = new double[2*d];
 	int* permutation = NULL;
-	if (options.randomize_method >= 1 && options.randomize_method <= 3)	{ permutation = (int*) _buf; _buf += n*sizeof(int); }
-
+	if (options.randomize_method >= 1 && options.randomize_method <= 3)	permutation = new int[n];
 	if (options.randomize_method == 1) generate_permutation(permutation, n);
 
-	double v_serious_start;
-	double t_serious_start;
+	int iter, approx_pass, total_pass;
+	int _i, i, k;
+	int approx_max = (options.cp_max <= 0) ? 0 : options.approx_max;
 
-	t_serious_start = get_time();
-	v_serious_start = Evaluate(w);
-
-	double* w_best = new double[d + ((options.proximal_method == 1) ? d : 0)];
-  std::memcpy(w_best, w, d*sizeof(double));
-	double* u = NULL;
-	if (options.proximal_method == 1)
-	{
-		u = w_best + d;
-    std::memcpy(u, w, d*sizeof(double));
-	}
-	double v_best = v_serious_start;
-
-	int serious_counter = 0;
-	int serious_iter_max = options.serious_iter_init;
-
-	double A_IAPPA1 = 1;
-
+	double upper_bound_last = GetCurrentUpperBound();
 	for (iter=total_pass=0; iter<options.iter_max; iter++)
 	{
 		timestamp = (float)(((int)timestamp) + 1); // When a plane is accessed, it is marked with 'timestamp'.
@@ -157,11 +196,11 @@ double* SVM::Solve()
 		if (options.randomize_method == 2) generate_permutation(permutation, n);
 
 		double _t[2];           // index 0: before calling real oracle
-		double _lower_bound[2]; // index 1: after calling real oracle
+		double _upper_bound[2]; // index 1: after calling real oracle
 
 		_t[0] = get_time();
 		if (_t[0] - time_start > options.time_max) break;
-		_lower_bound[0] = GetCurrentLowerBound();
+		_upper_bound[0] = GetCurrentUpperBound();
 
 		for (approx_pass=-1; approx_pass<approx_max; approx_pass++, total_pass++)
 		{
@@ -175,40 +214,38 @@ double* SVM::Solve()
 				else if (options.randomize_method == 0) i = _i;
 				else                                    i = RandomInteger(n);
 			
-				double* phi = terms[i]->phi;
-				double* zi = terms[i]->ComputeRestriction(z);
+				double* xi = terms[i]->xi;
+				double* mui = MU + terms[i]->shift;
+				double* lambdai = LAMBDA;
+				terms[i]->ComputeLambda(lambdai);
 				int di = terms[i]->di;
 				int* mapping = terms[i]->mapping;
-				YPtr y_new = (copy_fn) ? y_new_buf : phi_new;
+				YPtr y_new = y_buf;
+				double* xi_new = xi_buf;
 
 				if (approx_pass < 0) // call real oracle
 				{
-					*terms[i]->GetFreeTermPtr(y_new) = (*max_fn)(zi, y_new, terms[i]->term_data);
+					*terms[i]->GetFreeTermPtr(y_new) = (*min_fn)(lambdai, y_new, terms[i]->term_data);
 					AddCuttingPlane(i, y_new);
 				}
 				else  // call approximate oracle
 				{
-#ifdef NOT_IMPLEMENTED
-					if (options.kernel_max > 1)
-					{
-						SolveWithKernel(i, options.kernel_max);
-						//Multiply(w, neg_phi_sum, lambda_mu_inv, d);
-						terms[i]->RemoveUnusedPlanes();
-
-						continue;
-					}
-#endif
-
-					int t = terms[i]->Maximize(zi);
+					int t = terms[i]->Minimize(lambdai);
 					terms[i]->UpdateStats(t);
-          std::memcpy(y_new, terms[i]->y_arr[t], terms[i]->y_size_in_bytes_plus);
+					memcpy(y_new, terms[i]->y_arr[t], terms[i]->y_size_in_bytes + sizeof(double));
 					terms[i]->RemoveUnusedPlanes();
 				}
-				if (copy_fn) { (*copy_fn)(phi_new, y_new, terms[i]->term_data); phi_new[di] = *terms[i]->GetFreeTermPtr(y_new); }
+				if (copy_fn) { (*copy_fn)(xi_new, y_new, terms[i]->term_data); xi_new[di] = *terms[i]->GetFreeTermPtr(y_new); }
 
 				// min_{gamma \in [0,1]} B*gamma*gamma - 2*A*gamma
-				double A = Op1(phi_new, phi, zi, di) + (phi_new[di] - phi[di]); // <phi_new-phi,zi> + (b_new - b)
-				double B = c*Op2(phi, phi_new, di); // c*||current-current_new||^2
+				double A = xi[di] - xi_new[di], B = 0;
+				for (k=0; k<di; k++)
+				{
+					double z = xi[k] - xi_new[k];
+					A += lambdai[k]*z;
+					B += z*z;
+				}
+				B *= c;
 				double gamma;
 				if (B<=0) gamma = (A <= 0) ? 0 : 1;
 				else
@@ -220,266 +257,103 @@ double* SVM::Solve()
 
 				if (!mapping)
 				{
-					for (k=0; k<=di; k++)
+					for (k=0; k<di; k++)
 					{
-						double old = phi[k];
-						phi[k] = (1-gamma)*phi[k] + gamma*phi_new[k];
-						z[k] -= c*(phi[k] - old);
+						double old = xi[k];
+						xi[k] = (1-gamma)*xi[k] + gamma*xi_new[k];
+						nu[k] += c*(xi[k] - old) / counts[k];
 					}
 				}
 				else
 				{
-					for (k=0; k<=di; k++)
+					for (k=0; k<di; k++)
 					{
-						double old = phi[k];
-						phi[k] = (1-gamma)*phi[k] + gamma*phi_new[k];
-						z[mapping[k]] -= c*(phi[k] - old);
+						double old = xi[k];
+						xi[k] = (1-gamma)*xi[k] + gamma*xi_new[k];
+						nu[mapping[k]] += c*(xi[k] - old) / counts[mapping[k]];
 					}
 				}
+				xi[di] = (1-gamma)*xi[di] + gamma*xi_new[di];
 			}
 
 			double t = get_time();
-			lower_bound_last = GetCurrentLowerBound();
+			upper_bound_last = GetCurrentUpperBound();
+			//printf("upper_bound=%f\n", upper_bound_last);
 
 			if (approx_pass >= 0)
 			{
-				if ( (lower_bound_last - _lower_bound[1]) * (_t[1]-_t[0]) * options.approx_limit_ratio
-				   < (_lower_bound[1]  - _lower_bound[0]) * (t-_t[1])      ) { approx_pass ++; break; }
+				if ( (_upper_bound[1] - upper_bound_last) * (_t[1]-_t[0]) * options.approx_limit_ratio
+				   < (_upper_bound[0] - _upper_bound[1] ) * (t-_t[1])      ) { approx_pass ++; break; }
 			}
 
 			_t[1] = t;
-			_lower_bound[1] = lower_bound_last;
+			_upper_bound[1] = upper_bound_last;
 		}
 
-		if ((iter % options.check_w_freq) == 0)
+		if ((iter % options.MPBCFW_check_freq) == 0 && iter > 0)
 		{
 			double t = get_time();
-			double v = Evaluate(z);
-			double p = 0, g1 = 0, v0 = 0;
-			for (k=0; k<d; k++)
+			for (i=0; i<n; i++)
 			{
-				p += (w[k]-z[k])*(w[k]-z[k]);
-				v0 += z[k]*(w[k]-z[k]);
-				g1 += std::abs(w[k]-z[k]);
+				terms[i]->ComputeLambda(LAMBDA+terms[i]->shift);
 			}
-			double g2 = sqrt(p) / c;
-			p /= 2*c;
-			g1 /= c;
-			v0 = (v0 - z[d]) / c;
-			double gap = v-v0;
-			
-			//printf("iter=%d t=%fs v=%f v-v_serious_start=%f, p=%f, c=%f", iter, t - time_start, v, v-v_serious_start, p, c);
-			printf("iter=%d t=%fs v=%f gaps=(%f %f %f), c=%f", iter, t - time_start, v, gap, g1, g2, c);
-			if (v < v_best)
+			double v = Evaluate(LAMBDA);
+			printf("iter=%d t=%fs v=%f", iter, t - time_start, v);
+			if (v_best < v)
 			{
+				memcpy(LAMBDA_best, LAMBDA, di_sum*sizeof(double));
 				v_best = v;
-        std::memcpy(w_best, z, d*sizeof(double));
 				printf("!");
 			}
-			printf("\n");
 
-			if (gap < options.gap_threshold && (g1 < options.g1_threshold || g2 < options.g2_threshold)) break;
-
-			if (serious_counter ++ >= serious_iter_max)
+			if ((iter % (options.MPBCFW_check_freq*options.MPBCFW_update_freq)) == 0)
 			{
-				printf("*\n");
+				double gap0, gap1, upper_bound;
+				ComputeGaps(LAMBDA_best, upper_bound, gap1, x_buf);
+				gap0 = upper_bound - v_best;
+				printf(" Gaps: %f %f\nUpdating mu", gap0, gap1);
 
-				serious_counter = 0;
+				// possibly, modify c here
 
-				// update c
-				if (p < 0.1*std::abs(v_serious_start - v)) c *= options.c_decrease_factor; 
-				else                                   c *= options.c_increase_factor; 
-				if (c < options.c_min) c = options.c_min;
-				if (c > options.c_max) c = options.c_max;
-
-				// update serious_iter_max
-				if (v < v_serious_start)            serious_iter_max = (int)(serious_iter_max*options.serious_iter_decrease_factor);
-				else if (v_best == v_serious_start) serious_iter_max = (int)(serious_iter_max*options.serious_iter_increase_factor);
-				if (serious_iter_max < options.serious_iter_min) serious_iter_max = options.serious_iter_min;
-				if (serious_iter_max > options.serious_iter_max) serious_iter_max = options.serious_iter_max;
-
-				// update w, set z accordingly
-				if (options.proximal_method == 0 || v_best == v_serious_start)
-				{
-					for (i=0; i<d; i++) z[i] = w[i] = w_best[i];
-					v_serious_start = v_best;
-				}
-				else
-				{
-					if (options.proximal_method == 1)
-					{
-						double a = options.proximal_method_alpha;
-						for (i=0; i<d; i++)
-						{
-							u[i] -= (1/a) * (w[i] - w_best[i]);
-							w[i] = (1-a)*w_best[i] + a*u[i];
-							z[i] = w[i];
-						}
-					}
-					else if (options.proximal_method == 2)
-					{
-						double a = options.proximal_method_alpha;
-						for (i=0; i<d; i++)
-						{
-							w[i] = (1-a)*w_best[i] + a*w[i];
-							z[i] = w[i];
-						}
-					}
-					v_serious_start = Evaluate(z);
-					if (v_serious_start < v_best)
-					{
-						v_best = v_serious_start;
-            std::memcpy(w_best, z, d*sizeof(double));
-					}
-				}
-				z[d] = 0;
+				memset(nu, 0, d*sizeof(double));
 				for (i=0; i<n; i++)
 				{
+					double* lambdai = LAMBDA_best + terms[i]->shift;
+					double* mui = MU + terms[i]->shift;
 					if (!terms[i]->mapping)
 					{
-						for (k=0; k<=terms[i]->di; k++) z[k] -= c*terms[i]->phi[k];
+						for (k=0; k<d; k++)
+						{
+							mui[k] = lambdai[k];
+							nu[k] += lambdai[k] + c*terms[i]->xi[k];
+						}
 					}
 					else
 					{
-						for (k=0; k<=terms[i]->di; k++) z[terms[i]->mapping[k]] -= c*terms[i]->phi[k];
+						for (k=0; k<terms[i]->di; k++)
+						{
+							mui[k] = lambdai[k];
+							nu[terms[i]->mapping[k]] += lambdai[k] + c*terms[i]->xi[k];
+						}
 					}
 				}
-
-				t_serious_start = t;
+				for (k=0; k<d; k++)
+				{
+					if (counts[k]) nu[k] /= counts[k];
+				}
+				if (gap0 <= options.gap0_max && gap1 <= options.gap1_max)
+				{
+					printf("\n");
+					break;
+				}
 			}
+			printf("\n");
 		}
 	}
 
-  std::memcpy(w, w_best, d*sizeof(double));
-
-	delete [] w_best;
-	delete [] _buf0;
-	return w;
+	delete [] x_buf;
+	if (permutation) delete [] permutation;
+	return v_best;
 }
 
-#ifdef NOT_IMPLEMENTED
-void SVM::SolveWithKernel(int _i, int iter_max)
-{
-	Term* T = terms[_i];
-	int num = T->num, di = T->di, i, t, iter;
-	double** kk = T->products;
-	double* ck = (double*) rbuf_SolveWithKernel.Alloc(3*num*sizeof(double)); // ck[i] = DotProduct(phi, T->a[i], d)
-	double* sk = ck + num; // sk[i] = DotProduct(phi_sum, T->a[i], d)
-	double cc = DotProduct(T->phi, T->phi, di);
-	double cs = -DotProduct(T->phi, neg_phi_sum, T->mapping, di);
-	double c_d = T->phi[di]*kappa;
 
-	double* x = sk + num;
-	double cx = 1;
-
-	double gamma;
-
-	double* neg_phi_sum_short = T->ComputeRestriction(neg_phi_sum);
-	for (i=0; i<num; i++)
-	{
-		ck[i] = (*dot_product_fn)(T->phi,             T->y_arr[i], T->term_data);
-		sk[i] = -(*dot_product_fn)(neg_phi_sum_short, T->y_arr[i], T->term_data);
-		x[i] = 0;
-	}
-
-	for (iter=0; iter<iter_max; iter++)
-	{
-		if (iter > 0)
-		{
-			c_d += gamma*(*T->GetFreeTermPtr(T->y_arr[t])*kappa - c_d);
-			double cc_new = cc + 2*gamma*(ck[t] - cc) + gamma*gamma*(kk[t][t] - 2*ck[t] + cc);
-			double cs_new = cs+ gamma*(ck[t] + sk[t] - cc - cs) + gamma*gamma*(kk[t][t] - 2*ck[t] + cc);
-			cc = cc_new;
-			cs = cs_new;
-
-			for (i=0; i<num; i++)
-			{
-				if (kk[i][t] == NOT_YET_COMPUTED) kk[i][t] = (*dot_product_kernel_fn)(T->y_arr[i], T->y_arr[t], T->term_data);
-				double delta = gamma*(kk[i][t] - ck[i]);
-				ck[i] += delta;
-				sk[i] += delta;
-			}
-		}
-
-		t = 0;
-		double v_best;
-		for (i=0; i<num; i++)
-		{
-			double v = -sk[i] * lambda_mu_inv + *T->GetFreeTermPtr(T->y_arr[i])*kappa;
-			if (i==0 || v_best < v) { t = i; v_best = v; }
-		}
-		T->UpdateStats(t);
-
-		if (kk[t][t] == NOT_YET_COMPUTED) kk[t][t] = (*dot_product_kernel_fn)(T->y_arr[t], T->y_arr[t], T->term_data);
-
-		// min_{gamma \in [0,1]} B*gamma*gamma - 2*A*gamma
-		double A = cs - sk[t] + (*T->GetFreeTermPtr(T->y_arr[t])*kappa - c_d)*lambda_mu;
-		double B = cc + kk[t][t] - 2*ck[t];
-
-		if (B<=0) gamma = (A <= 0) ? 0 : 1;
-		else
-		{
-			gamma = A/B;
-			if (gamma < 0) gamma = 0;
-			if (gamma > 1) gamma = 1;
-		}
-
-		cx *= 1-gamma;
-		for (i=0; i<num; i++) x[i] *= 1-gamma;
-		x[t] += gamma;
-	}
-
-	if (!T->mapping)
-	{
-		for (i=0; i<=di; i++) { neg_phi_sum[i] += T->phi[i]; T->phi[i] *= cx; }
-	}
-	else
-	{
-		for (i=0; i<=di; i++) { neg_phi_sum[T->mapping[i]] += T->phi[i]; T->phi[i] *= cx; }
-	}
-
-	double* a;
-	if (copy_fn) a = new double[di+1];
-	for (t=0; t<num; t++)
-	{
-		if (x[t] == 0) continue;
-		if (copy_fn) { (*copy_fn)(a, T->y_arr[t], T->term_data); a[di] = *T->GetFreeTermPtr(T->y_arr[t]); }
-		else a = (double*) T->y_arr[t];
-		for (i=0; i<=di; i++) T->phi[i] += x[t]*a[i];
-	}
-	if (copy_fn) delete [] a;
-
-	if (!T->mapping)
-	{
-		for (i=0; i<=di; i++) neg_phi_sum[i] -= T->phi[i];
-	}
-	else
-	{
-		for (i=0; i<=di; i++) neg_phi_sum[T->mapping[i]] -= T->phi[i];
-	}
-}
-#endif
-
-#ifdef NOT_IMPLEMENTED
-void SVM::InterpolateBest(double* s1, double* s2, double* s_best)
-{
-	double A = Op1(s1, s2, d) - (s2[d] - s1[d])*kappa*lambda_mu;
-	double B = Op2(s1, s2, d);
-	double gamma;
-	if (B<=0) gamma = (A <= 0) ? 0 : 1;
-	else
-	{
-		gamma = A/B;
-		if (gamma < 0) gamma = 0;
-		if (gamma > 1) gamma = 1;
-	}
-
-	int k;
-	for (k=0; k<=d; k++)
-	{
-		s_best[k] = (1-gamma)*s1[k] + gamma*s2[k];
-	}
-}
-#endif
-
-} // namespace BCFW_Bundle

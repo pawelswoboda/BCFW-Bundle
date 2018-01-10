@@ -98,8 +98,6 @@
 /***********************************************************************/
 /***********************************************************************/
 
-namespace BCFW_Bundle {
-
 template <class Type> class Block
 {
 public:
@@ -386,8 +384,6 @@ private:
 
 	void	(*error_function)(const char *);
 };
-
-} // namespace BCFW_BUNDLE
 
 #endif
 

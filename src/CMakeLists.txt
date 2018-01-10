@@ -1,2 +1,2 @@
-add_library(SVM SVM.cpp Solve.cpp) 
+add_library(FW-MAP FW-MAP.cpp Solve.cpp) 
 
