@@ -35,21 +35,22 @@ Function f depends on 'd' variables, term i depends on di=|A_i| variables where 
 It is assumed \min_xi [fi(xi)+<lambdai,xi>] can be solved efficiently for any given i and lambdai
 */
 
-typedef void *TermData; // pointer provided by the user in SetTerm()
-typedef void *YPtr; // pointer to an array of size 'y_size_in_bytes' that stores planes (i.e. labelings) for individual terms.
-
-
-typedef double (*MinFn)(double* lambdai, YPtr y, TermData term_data); // Min-oracle (to be implemented by the user).
-                                                                      // Must copy argmin_{x} [f(x)+<lambdai,x>] to y (possibly in a compressed form), and return the free term f(x)
-
-// If compressed representations of planes are used, then the user must implement the following two functions
-
-typedef void (*CopyFn)(double* xi, YPtr y, TermData term_data); // copies the plane encoded by 'y' to vector xi of size di
-typedef double (*DotProductFn)(double* lambdai, YPtr y, TermData term_data); // returns <lambdai, xi> where xi is the vector encoded by 'y'
-
 class FWMAP
 {
 public:
+  typedef void *TermData; // pointer provided by the user in SetTerm()
+  typedef void *YPtr; // pointer to an array of size 'y_size_in_bytes' that stores planes (i.e. labelings) for individual terms.
+
+
+  typedef double (*MinFn)(double* lambdai, YPtr y, TermData term_data); // Min-oracle (to be implemented by the user).
+  // Must copy argmin_{x} [f(x)+<lambdai,x>] to y (possibly in a compressed form), and return the free term f(x)
+
+  // If compressed representations of planes are used, then the user must implement the following two functions
+
+  typedef void (*CopyFn)(double* xi, YPtr y, TermData term_data); // copies the plane encoded by 'y' to vector xi of size di
+  typedef double (*DotProductFn)(double* lambdai, YPtr y, TermData term_data); // returns <lambdai, xi> where xi is the vector encoded by 'y'
+
+
 	// d = # of variables, n = # of terms.
 	FWMAP(int d, int n, MinFn min_fn, CopyFn copy_fn=NULL, DotProductFn dot_product_fn=NULL);
 	~FWMAP();

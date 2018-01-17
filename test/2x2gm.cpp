@@ -8,7 +8,7 @@ struct sub_problem_test {
   std::array<double,2> cost; // simplex with two entries.
 };
 
-double max_fn_test(double* wi, YPtr _y, TermData term_data) // maximization oracle. Must copy argmax_y <a^{iy},[PAD(wi) kappa]> to y, and return the free term a^{iy}[d].
+double max_fn_test(double* wi, FWMAP::YPtr _y, FWMAP::TermData term_data) // maximization oracle. Must copy argmax_y <a^{iy},[PAD(wi) kappa]> to y, and return the free term a^{iy}[d].
 {
   sub_problem_test* sp = (sub_problem_test*) term_data;
   size_t* y = (size_t*) _y;
@@ -22,7 +22,7 @@ double max_fn_test(double* wi, YPtr _y, TermData term_data) // maximization orac
   return sp->cost[*y]; 
 }
 
-static void copy_fn_test(double* ai, YPtr _y, TermData term_data)
+static void copy_fn_test(double* ai, FWMAP::YPtr _y, FWMAP::TermData term_data)
 {
   sub_problem_test* sp = (sub_problem_test*) term_data;
   size_t* y = (size_t*) _y;
@@ -31,7 +31,7 @@ static void copy_fn_test(double* ai, YPtr _y, TermData term_data)
   ai[*y] = 1.0;
 }
 
-static double dot_product_fn_test(double* wi, YPtr _y, TermData term_data)
+static double dot_product_fn_test(double* wi, FWMAP::YPtr _y, FWMAP::TermData term_data)
 {
   sub_problem_test* sp = (sub_problem_test*) term_data;
   size_t* y = (size_t*) _y;
