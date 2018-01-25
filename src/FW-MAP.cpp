@@ -54,6 +54,11 @@ FWMAP::~FWMAP()
 		}
 		delete [] terms;
 	}
+
+	delete [] x_buf;
+  if(permutation != nullptr) {
+    delete [] permutation;
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

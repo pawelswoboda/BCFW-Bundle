@@ -67,7 +67,11 @@ public:
 	//                  Note, if y_size_in_bytes is different from these values then functions 'copy_fn' and 'dot_product_fn' must be implemented
 	void SetTerm(int i, TermData term_data, int di, int* mapping=NULL, int y_size_in_bytes=0); 
 
-	double Solve(); // returns the value of the objective function h(lambda)
+  void init();
+
+	//double Solve(); // returns the value of the objective function h(lambda)
+
+  double do_descent_step(); // iterate until we update the new center point mu
 
 	double* GetLambda(int i) { return LAMBDA_best + terms[i]->shift; } // returns pointer to array of size 'di'
 
@@ -241,6 +245,15 @@ private:
 	double* nu; // of size d
 	int* counts; // of size d
 	Term** terms; // of size n
+
+  // iteration information
+	double* x_buf;
+  int* permutation;
+	int iter, approx_pass, total_pass;
+  int approx_max;
+  double upper_bound_last;
+  double time_start;
+
 
 	float timestamp, timestamp_threshold;
 	int total_plane_num;

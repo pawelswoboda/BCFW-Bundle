@@ -163,7 +163,198 @@ void FWMAP::InitSolver()
 	}
 }
 
+void FWMAP::init()
+{
+	c = options.c;
+	if (!LAMBDA_best)
+	{
+		InitSolver();
+	}
 
+	x_buf = new double[2*d];
+	permutation = NULL;
+	if (options.randomize_method >= 1 && options.randomize_method <= 3)	permutation = new int[n];
+	if (options.randomize_method == 1) generate_permutation(permutation, n);
+
+	approx_max = (options.cp_max <= 0) ? 0 : options.approx_max;
+
+	upper_bound_last = GetCurrentUpperBound(); 
+}
+
+double FWMAP::do_descent_step()
+{
+	int _i, i, k;
+  for (iter=total_pass=0; iter<options.iter_max; iter++)
+  {
+		timestamp = (float)(((int)timestamp) + 1); // When a plane is accessed, it is marked with 'timestamp'.
+		                                           // Throughout the outer iteration, this counter will be gradually
+		                                           // increased from 'iter+1' to 'iter+1.5', so that we
+		                                           // (1) we can distinguish between planes added in the same iteration (when removing the oldest plane), and
+		                                           // (2) we can easily determine whether a plane has been active during the last 'cp_inactive_iter_max' iterations
+		if (options.cp_inactive_iter_max > 0) timestamp_threshold = timestamp - options.cp_inactive_iter_max;
+
+		if (options.randomize_method == 2) generate_permutation(permutation, n);
+
+		double _t[2];           // index 0: before calling real oracle
+		double _upper_bound[2]; // index 1: after calling real oracle
+
+		_t[0] = get_time();
+		if (_t[0] - time_start > options.time_max) break;
+		_upper_bound[0] = GetCurrentUpperBound();
+
+		for (approx_pass=-1; approx_pass<approx_max; approx_pass++, total_pass++)
+		{
+			timestamp += (float) ( 0.5 / (approx_max+1) );
+
+			if (options.randomize_method == 3) generate_permutation(permutation, n);
+
+			for (_i=0; _i<n; _i++)
+			{
+				if (permutation)                        i = permutation[_i];
+				else if (options.randomize_method == 0) i = _i;
+				else                                    i = RandomInteger(n);
+			
+				double* xi = terms[i]->xi;
+				double* mui = MU + terms[i]->shift;
+				double* lambdai = LAMBDA;
+				terms[i]->ComputeLambda(lambdai);
+				int di = terms[i]->di;
+				int* mapping = terms[i]->mapping;
+				YPtr y_new = y_buf;
+				double* xi_new = xi_buf;
+
+				if (approx_pass < 0) // call real oracle
+				{
+					*terms[i]->GetFreeTermPtr(y_new) = (*min_fn)(lambdai, y_new, terms[i]->term_data);
+					AddCuttingPlane(i, y_new);
+				}
+				else  // call approximate oracle
+				{
+					int t = terms[i]->Minimize(lambdai);
+					terms[i]->UpdateStats(t);
+					memcpy(y_new, terms[i]->y_arr[t], terms[i]->y_size_in_bytes + sizeof(double));
+					terms[i]->RemoveUnusedPlanes();
+				}
+				if (copy_fn) { (*copy_fn)(xi_new, y_new, terms[i]->term_data); xi_new[di] = *terms[i]->GetFreeTermPtr(y_new); }
+
+				// min_{gamma \in [0,1]} B*gamma*gamma - 2*A*gamma
+				double A = xi[di] - xi_new[di], B = 0;
+				for (k=0; k<di; k++)
+				{
+					double z = xi[k] - xi_new[k];
+					A += lambdai[k]*z;
+					B += z*z;
+				}
+				B *= c;
+				double gamma;
+				if (B<=0) gamma = (A <= 0) ? 0 : 1;
+				else
+				{
+					gamma = A/B;
+					if (gamma < 0) gamma = 0;
+					if (gamma > 1) gamma = 1;
+				}
+
+				if (!mapping)
+				{
+					for (k=0; k<di; k++)
+					{
+						double old = xi[k];
+						xi[k] = (1-gamma)*xi[k] + gamma*xi_new[k];
+						nu[k] += c*(xi[k] - old) / counts[k];
+					}
+				}
+				else
+				{
+					for (k=0; k<di; k++)
+					{
+						double old = xi[k];
+						xi[k] = (1-gamma)*xi[k] + gamma*xi_new[k];
+						nu[mapping[k]] += c*(xi[k] - old) / counts[mapping[k]];
+					}
+				}
+				xi[di] = (1-gamma)*xi[di] + gamma*xi_new[di];
+			}
+
+			double t = get_time();
+			upper_bound_last = GetCurrentUpperBound();
+			//printf("upper_bound=%f\n", upper_bound_last);
+
+			if (approx_pass >= 0)
+			{
+				if ( (_upper_bound[1] - upper_bound_last) * (_t[1]-_t[0]) * options.approx_limit_ratio
+				   < (_upper_bound[0] - _upper_bound[1] ) * (t-_t[1])      ) { approx_pass ++; break; }
+			}
+
+			_t[1] = t;
+			_upper_bound[1] = upper_bound_last;
+		}
+
+		if ((iter % options.MPBCFW_check_freq) == 0 && iter > 0)
+		{
+			double t = get_time();
+			for (i=0; i<n; i++)
+			{
+				terms[i]->ComputeLambda(LAMBDA+terms[i]->shift);
+			}
+			double v = Evaluate(LAMBDA);
+			printf("iter=%d t=%fs v=%f", iter, t - time_start, v);
+			if (v_best < v)
+			{
+				memcpy(LAMBDA_best, LAMBDA, di_sum*sizeof(double));
+				v_best = v;
+				printf("!");
+			}
+
+			if ((iter % (options.MPBCFW_check_freq*options.MPBCFW_update_freq)) == 0)
+			{
+				double gap0, gap1, upper_bound;
+				ComputeGaps(LAMBDA_best, upper_bound, gap1, x_buf);
+				gap0 = upper_bound - v_best;
+				printf(" Gaps: %f %f\nUpdating mu", gap0, gap1);
+
+				// possibly, modify c here
+
+				memset(nu, 0, d*sizeof(double));
+				for (i=0; i<n; i++)
+				{
+					double* lambdai = LAMBDA_best + terms[i]->shift;
+					double* mui = MU + terms[i]->shift;
+					if (!terms[i]->mapping)
+					{
+						for (k=0; k<d; k++)
+						{
+							mui[k] = lambdai[k];
+							nu[k] += lambdai[k] + c*terms[i]->xi[k];
+						}
+					}
+					else
+					{
+						for (k=0; k<terms[i]->di; k++)
+						{
+							mui[k] = lambdai[k];
+							nu[terms[i]->mapping[k]] += lambdai[k] + c*terms[i]->xi[k];
+						}
+					}
+				}
+				for (k=0; k<d; k++)
+				{
+					if (counts[k]) nu[k] /= counts[k];
+				}
+				if (gap0 <= options.gap0_max && gap1 <= options.gap1_max)
+				{
+					printf("\n");
+					break;
+				}
+        return v_best;
+			}
+			printf("\n");
+		}
+	}
+	return v_best;
+}
+
+/*
 double FWMAP::Solve()
 {
 	double time_start = get_time();
@@ -355,5 +546,6 @@ double FWMAP::Solve()
 	if (permutation) delete [] permutation;
 	return v_best;
 }
+*/
 
 

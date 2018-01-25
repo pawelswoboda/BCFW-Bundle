@@ -48,10 +48,16 @@ int main()
   sub_problem_test sp2;
   sp2.cost = {20.0,0.0};
 
-  s.SetTerm(0, &sp1, 2, nullptr, sizeof(size_t));
-  s.SetTerm(1, &sp2, 2, nullptr, sizeof(size_t));
+  std::array<int,2> mapping = {0,1};
+  s.SetTerm(0, &sp1, 2, &mapping[0], sizeof(size_t));
+  s.SetTerm(1, &sp2, 2, &mapping[0], sizeof(size_t));
 
-  double cost = s.Solve();
+  s.init();
+  double cost;
+  for(size_t i=0; i<100; ++i) {
+    cost = s.do_descent_step();
+  }
+  //double cost = s.Solve();
   
   double* lambda1 = s.GetLambda(0);
   double* lambda2 = s.GetLambda(1);
