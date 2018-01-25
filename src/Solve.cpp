@@ -179,12 +179,14 @@ void FWMAP::init()
 	approx_max = (options.cp_max <= 0) ? 0 : options.approx_max;
 
 	upper_bound_last = GetCurrentUpperBound(); 
+
+  iter = 0;
 }
 
 double FWMAP::do_descent_step()
 {
 	int _i, i, k;
-  for (iter=total_pass=0; iter<options.iter_max; iter++)
+  for (; iter<options.iter_max; iter++)
   {
 		timestamp = (float)(((int)timestamp) + 1); // When a plane is accessed, it is marked with 'timestamp'.
 		                                           // Throughout the outer iteration, this counter will be gradually
