@@ -105,7 +105,7 @@ public:
 	   (optionally) the pointer to the function which
 	   will be called if allocation failed; the message
 	   passed to this function is "Not enough memory!" */
-	Block(int size, void (*err_function)(const char *) = NULL) { first = last = NULL; block_size = size; error_function = err_function; }
+	Block(std::size_t size, void (*err_function)(const char *) = NULL) { first = last = NULL; block_size = size; error_function = err_function; }
 
 	/* Destructor. Deallocates all items added so far */
 	~Block() { while (first) { block *next = first -> next; delete[] ((char*)first); first = next; } }
@@ -113,7 +113,7 @@ public:
 	/* Allocates 'num' consecutive items; returns pointer
 	   to the first item. 'num' cannot be greater than the
 	   block size since items must fit in one block */
-	Type *New(int num = 1)
+	Type *New(std::size_t num = 1)
 	{
 		Type *t;
 
@@ -208,7 +208,7 @@ private:
 		Type					data[1];
 	} block;
 
-	int		block_size;
+	std::size_t		block_size;
 	block	*first;
 	block	*last;
 public:
@@ -235,7 +235,7 @@ public:
 	   (optionally) the pointer to the function which
 	   will be called if allocation failed; the message
 	   passed to this function is "Not enough memory!" */
-	DBlock(int size, void (*err_function)(const char *) = NULL) { first = NULL; first_free = NULL; block_size = size; error_function = err_function; }
+	DBlock(std::size_t size, void (*err_function)(const char *) = NULL) { first = NULL; first_free = NULL; block_size = size; error_function = err_function; }
 
 	/* Destructor. Deallocates all items added so far */
 	~DBlock() { while (first) { block *next = first -> next; delete[] ((char*)first); first = next; } }
@@ -285,7 +285,7 @@ private:
 		block_item				data[1];
 	} block;
 
-	int			block_size;
+	std::size_t			block_size;
 	block		*first;
 	block_item	*first_free;
 
@@ -306,7 +306,7 @@ public:
 	ReusableBuffer(void (*err_function)(const char *) = NULL) : size_max(0), buf(NULL), error_function(err_function) {}
 	~ReusableBuffer() { if (buf) free(buf); }
 
-	void* Alloc(int size)
+	void* Alloc(std::size_t size)
 	{
 		if (size <= size_max) return buf;
 		size_max = (int)(1.2*size_max) + size;
@@ -315,7 +315,7 @@ public:
 		if (!buf) { if (error_function) (*error_function)("Not enough memory!"); exit(1); }
 		return buf;
 	}
-	void* Realloc(int size)
+	void* Realloc(std::size_t size)
 	{
 		if (size <= size_max) return buf;
 		size_max = (int)(1.2*size_max) + size;
@@ -327,7 +327,7 @@ public:
 
 private:
 	char* buf;
-	int size_max;
+	std::size_t size_max;
 
 	void	(*error_function)(const char *);
 };
@@ -343,7 +343,7 @@ private:
 class Buffer
 {
 public:
-	Buffer(int _default_size, void (*err_function)(const char *) = NULL) 
+	Buffer(std::size_t _default_size, void (*err_function)(const char *) = NULL) 
 		: default_size(_default_size), buf_first(NULL), error_function(err_function) {}
 	~Buffer()
 	{
@@ -355,11 +355,11 @@ public:
 		}
 	}
 
-	void* Alloc(int size)
+	void* Alloc(std::size_t size)
 	{
 		if (!buf_first || buf_first->size+size>buf_first->size_max)
 		{
-			int size_max = 2*size + default_size;
+			std::size_t size_max = 2*size + default_size;
 			Buf* b = (Buf*)(new char[sizeof(Buf)+size_max]);
 			if (!b) { if (error_function) (*error_function)("Not enough memory!"); exit(1); }
 			b->next = buf_first;
@@ -375,11 +375,11 @@ public:
 private:
 	struct Buf
 	{
-		int size, size_max;
+		std::size_t size, size_max;
 		char* arr;
 		Buf* next;
 	};
-	int default_size;
+	std::size_t default_size;
 	Buf* buf_first;
 
 	void	(*error_function)(const char *);
